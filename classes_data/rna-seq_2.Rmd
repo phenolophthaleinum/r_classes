@@ -1,0 +1,463 @@
+
+# Zainstalowania pakietów
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("AnnotationDbi")
+BiocManager::install("org.Hs.eg.db")
+BiocManager::install("org.Mm.eg.db")
+install.packages('viridis')
+BiocManager::install('mixOmics')
+install.packages('RColorBrewer')
+BiocManager::install("GO.db")
+BiocManager::install("systemPipeR")
+BiocManager::install("clusterProfiler")
+BiocManager::install("Glimma")
+BiocManager::install("edgeR")
+BiocManager::install("biomaRt")
+```
+
+# Załadowanie pakietów
+```{r}
+library("AnnotationDbi")
+library("biomaRt")
+library("org.Hs.eg.db")
+library('org.Mm.eg.db')
+library(edgeR)
+library(limma)
+library(Glimma)
+library(gplots)
+library(RColorBrewer)
+```
+
+# Anotacje
+
+## org.Hs.eg.db/org.Mm.eg.db
+```{r}
+columns(org.Hs.eg.db)
+help(SYMBOL)
+keytypes(org.Hs.eg.db)
+head(keys(org.Hs.eg.db, keytype="SYMBOL"))
+head(keys(org.Hs.eg.db, keytype="GENENAME"))
+head(keys(org.Hs.eg.db, keytype="ENTREZID"))
+# możemy wybrać inne anotacje dla konkretnego genu
+CELF1_db = select(org.Hs.eg.db, keys = "CELF1", keytype = "SYMBOL", columns = c("ACCNUM", "SYMBOL", "GENENAME", "ALIAS", "GO", "CHR") )
+chr2_db = select(org.Hs.eg.db, keys = "2", keytype = "CHR", columns = c("SYMBOL", "GENENAME", "GO") )
+```
+
+```{r}
+keys(org.Mm.eg.db, "CHR")
+```
+
+## dane z anlizy różnicowej - dodawanie symboli genów
+```{r}
+# ładujemy dane będące wynikiem analizy różnicowej
+load(system.file("extdata", "resultTable.Rda", package="AnnotationDbi"))
+head(resultTable)
+```
+
+```{r}
+# dodajemy informację dotyczące symboli genów
+SYM <- select(org.Hs.eg.db, keys = rownames(resultTable), keytype = "ENTREZID", columns = "SYMBOL")
+NewResult <- merge(resultTable,SYM,by.x=0,by.y=1)
+head(NewResult)
+```
+
+## biomart
+```{r}
+listMarts()
+#listMarts(host = "plants.ensembl.org")
+#p <- useMart("plants_mart",host = "plants.ensembl.org")
+m <- useMart("ENSEMBL_MART_ENSEMBL")
+listDatasets(m)
+
+h <- useMart("ENSEMBL_MART_ENSEMBL", dataset="hsapiens_gene_ensembl")
+listAttributes(h)
+searchAttributes(h, pattern = "GO")
+
+m1 <- useMart("ENSEMBL_MART_ENSEMBL", dataset="mmusculus_gene_ensembl")
+listAttributes(m1)
+```
+
+```{r}
+go <- getBM(attributes = c("chromosome_name","start_position", "end_position", "ensembl_gene_id", "strand","external_gene_name"),
+            filter="chromosome_name",
+            values="X",
+            mart = h
+            )
+head(go)
+
+mouse_genes = getBM(attributes = c("chromosome_name","start_position", "end_position", "ensembl_gene_id", "strand","external_gene_name"),
+            mart = m1
+            )
+```
+
+# Ekspresja różnicowa genów (pakiet edgeR)
+```{r}
+# Wczytanie danych do R
+seqdata <- read.table("/path/to/file/DE/GSE60450_Lactation-GenewiseCounts.txt", stringsAsFactors = FALSE, header = T)
+
+dim(seqdata)
+
+sampleinfo <- read.delim("/path/to/file/DE/SampleInfo_Corrected.txt", header = T, stringsAsFactors = T) # dodać stringsAsFactors=T inaczej kolumny będą jako characters i nie będą rozpoznawane jako wektory
+
+sampleinfo
+```
+
+## Tworzenie obiektu DGEList
+```{r}
+y <- DGEList(counts = seqdata[, 3:14], genes = seqdata[,1], group = sampleinfo$CellType)
+```
+
+```{r}
+names(y)
+y$samples
+```
+
+## Annotacja
+```{r}
+library(org.Mm.eg.db)
+egSYMBOL <- toTable(org.Mm.egSYMBOL)
+head(egSYMBOL)
+m <- match(y$genes$genes, egSYMBOL$gene_id)
+y$genes$Symbol <- egSYMBOL$symbol[m]
+head(y$genes)
+colnames(y) <- substr(colnames(y),start=1,stop=7)
+head(y)
+```
+
+## Odczyty o informacje o próbach
+```{r}
+table(colnames(y)==sampleinfo$SampleName)
+```
+
+## Filtrowanie danych
+```{r}
+d <- is.na(y$genes$Symbol)
+y <- y[!d,]
+nrow(y)
+```
+
+```{r}
+keep <- filterByExpr(y, min.count = 5, min.prop = 0.5)
+table(keep)
+```
+
+```{r}
+y <- y[keep,  keep.lib.sizes=FALSE]
+```
+
+### ponowne przeliczenie wielkości bibliotek
+```{r}
+y$samples$lib.size <- colSums(y$counts)
+y$samples
+```
+
+## Normalizacja TMM
+```{r}
+y1 <- calcNormFactors(y)
+y1$samples
+```
+
+## Wykres wielkości bibliotek
+```{r}
+y1$samples$lib.size
+barplot(y1$samples$lib.size,names=colnames(y1),las=2)
+# Add a title to the plot
+title("Barplot of library sizes")
+```
+
+## Wykres rozkładów
+```{r fig.height=4, fig.width=8}
+par(mfrow=c(1,2))
+
+logcounts <- cpm(y,log=TRUE)
+boxplot(logcounts, xlab="", ylab="Log2 counts per million",las=2)
+abline(h=median(logcounts),col="blue") # dodanie linii mediany z logCPM
+title("Boxplots of logCPMs (unnormalised)")
+
+logcounts <- cpm(y1,log=TRUE)
+boxplot(logcounts, xlab="", ylab="Log2 counts per million",las=2)
+abline(h=median(logcounts),col="blue") # dodanie linii mediany z logCPM
+title("Boxplots of logCPMs (normalised)")
+```
+
+## Wykres MD (MAplot)
+```{r fig.height=4, fig.width=8}
+par(mfrow=c(1,2))
+
+plotMD(cpm(y, log=TRUE), column=7)
+abline(h=0, col="red", lty=2, lwd=2)
+
+plotMD(cpm(y, log=TRUE), column=11)
+abline(h=0, col="red", lty=2, lwd=2)
+```
+
+```{r fig.height=4, fig.width=8}
+par(mfrow=c(1,2))
+
+plotMD(y1,column = 7)
+abline(h=0,col="grey")
+
+plotMD(y1,column = 11)
+abline(h=0,col="grey")
+```
+
+## Multidimensional scaling plots (MDSplots)
+```{r}
+par(mfrow=c(1,2))
+# wzór kolorów ustawiony według "Cell type"
+levels(sampleinfo$CellType)
+
+col.cell <- c("purple","orange")[sampleinfo$CellType]
+data.frame(sampleinfo$CellType,col.cell)
+
+plotMDS(y1,col=col.cell)
+# dodanie legendy
+legend("topleft",fill=c("purple","orange"),legend=levels(sampleinfo$CellType))
+# dodanie tytułu
+title("Cell type")
+
+# podobnie dla "Statusu"
+levels(sampleinfo$Status)
+col.status <- c("blue","red","green")[sampleinfo$Status]
+col.status
+plotMDS(y1,col=col.status, pch = 5)
+legend("topleft",fill=c("blue","red","green"),legend=levels(sampleinfo$Status),cex=0.8)
+title("Status")
+```
+
+## Przygotowanie macierzy układu eksperymentalnego
+```{r}
+#group <- paste(sampleinfo$CellType, sampleinfo$Status, sep=".")
+#group <- factor(group)
+#group
+########## dla innych porównań ########## 
+group = sampleinfo$CellType
+group <- factor(group)
+group
+```
+
+```{r}
+design <- model.matrix(~ 0 + group)
+colnames(design) <- levels(group)
+design
+```
+
+## Oszacowanie dyspersji
+```{r}
+y1 <- estimateDisp(y1, design, robust=TRUE)
+y1$common.dispersion
+plotBCV(y1)
+```
+
+## Dopasowanie modelu liniowego
+```{r}
+fit <- glmQLFit(y1, design, robust=TRUE)
+head(fit$coefficients)
+```
+
+## Wybór porównań do testowania
+```{r}
+cont.matrix <- makeContrasts(B.PregVsLac = basal.pregnant - basal.lactate, levels = design)
+cont.matrix <- makeContrasts(BVsL = basal - luminal, levels = design)
+
+#cont.matrix <- makeContrasts(B.PregVsLac = basal.pregnant - basal.lactate, L.PregVsLac = luminal.pregnant - luminal.lactate, levels = design)
+
+cont.matrix
+```
+
+## Procedura testowa
+```{r}
+qlf <- glmQLFTest(fit, contrast = cont.matrix)
+topTags(qlf)
+summary(decideTests(qlf))
+```
+
+## Procedura testowa z uwzględnieniem FC
+```{r}
+tr <- glmTreat(fit, contrast=cont.matrix, lfc=log2(1.5))
+topTags(tr)
+summary(decideTests(tr))
+```
+
+## Wykresy po analizie różnicowej
+
+### Wykres MAplot
+```{r fig.height=4, fig.width=8}
+par(mfrow=c(1,2))
+
+plotMD(qlf)
+abline(h=c(-1,1), col="blue")
+
+plotMD(tr)
+abline(h=c(-1,1), col="blue")
+```
+
+### Dane do wykresu volcano
+```{r}
+FDR <- p.adjust(qlf$table$PValue, method="BH")
+
+volcanoData <- data.frame(
+  logFC = qlf$table$logFC.B.PregVsLac,
+  negLogPval = -log10(FDR)
+  )
+
+volcanoData2 <- data.frame(
+  logFC = qlf$table$logFC.L.PregVsLac,
+  negLogPval = -log10(FDR)
+  )
+
+head(volcanoData)
+head(volcanoData2)
+```
+
+### Wykres volcano
+```{r}
+library(ggplot2)
+
+ggplot(volcanoData, aes(logFC, negLogPval)) +
+geom_point()
+
+ggplot(volcanoData2, aes(logFC, negLogPval)) +
+geom_point()
+```
+
+```{r}
+library(dplyr)
+#volcanoData <- volcanoData %>%
+#  mutate(top50 = ifelse(row_number(desc(negLogPval)) < 51, T, F))
+
+volcanoData <- volcanoData %>%
+  mutate(sig = ifelse(volcanoData$negLogPval > 1.30103, T, F))
+
+ggplot(volcanoData, aes(logFC, negLogPval, color = sig)) +
+  geom_point() + theme(legend.position = "none") +
+  scale_color_manual(values = c("black", "blue"))
+```
+
+### Heatmap  (FDR < 0.05)
+```{r}
+library(viridis)
+library(mixOmics)
+library(RColorBrewer)
+```
+
+```{r}
+cpm_y <- cpm(tr, log=TRUE, prior.count = 1)
+head(cpm_y)
+```
+
+```{r include=FALSE}
+table = topTags(tr, n=Inf)
+table = as.data.frame(table)
+selY <- cpm_y[rownames(table)[table$FDR<0.01 & abs(table$logFC)>2.5],]
+```
+
+```{r fig.height=10, fig.width=10}
+cimColor <- turbo(255, begin = 0.1, end = 0.9, direction = 1)
+cim(t(selY), color = cimColor, symkey=F, transpose = T)
+```
+
+# GO (limma)
+```{r}
+library(limma)
+go <- goana(tr, species = "Mm")
+topGO(go, n = 10, sort = "up")
+```
+
+# Anotacje (biomaRt)
+```{r}
+library('biomaRt')
+m <- useMart("ENSEMBL_MART_ENSEMBL", 	dataset="mmusculus_gene_ensembl")
+go <- getBM(
+	attributes=c("go_id", "entrezgene_id", "namespace_1003"), mart=m)
+
+#zapisanie tabeli na dysku
+write.table(go, "/path/to/folder/GOannotationsBiomart_mouse.txt", # trzeba nada nazwę pliku i rozszerzenie
+	quote=FALSE, row.names=FALSE, col.names=FALSE, 	sep="\t")
+```
+
+# GO dla dużej ilości zestawów genów
+```{r}
+library(systemPipeR)
+
+#wczytanie anotacji
+#catdb <- makeCATdb(myfile="/path/to/folder/GOannotationsBiomart_mouse.txt", lib=NULL,org="", colno=c(1,2,3), idconv=NULL)
+
+#zapis danych do obiektów .rda; warto kiedy dane długo są generowane
+#save(catdb, file="/path/to/folder/catdb.RData")
+#ładowanie obiektów .rda poniższą komendą
+load(file="/path/to/file/DE/catdb.RData")
+```
+
+# Analiza GO - pakiet systemPipeR
+
+## Przygotowanie plików
+```{r}
+#library(systemPipeR)
+cmp <- matrix(c('basal.virgin','basal.pregnant','basal.virgin','basal.lactate','basal.pregnant','basal.lactate'), 3, 2, byrow=T)
+
+countDF <- y1$counts
+targets <- read.csv("/path/to/file/DE/targets.txt")
+edgeDF <- run_edgeR(countDF = countDF, targets = targets, cmp = cmp, independent = FALSE, mdsplot="")
+```
+
+## Przygotowanie listy DEG
+```{r}
+DEG_list <- filterDEGs(degDF = edgeDF, filter = c(Fold = 2.29739, FDR = 5), plot = FALSE)
+up_down <- DEG_list$UporDown
+names(up_down) <- paste(names(up_down), "_up_down", sep = "")
+up <- DEG_list$Up
+names(up) <- paste(names(up), "_up", sep = "")
+down <- DEG_list$Down
+names(down) <- paste(names(down), "_down", sep = "")
+DEGlist <- c(up_down, up, down)
+DEGlist <- DEGlist[sapply(DEGlist, length) > 0]
+```
+
+## Analiza GO
+```{r}
+#BatchResult <- GOCluster_Report(catdb = catdb, setlist = DEGlist, method = "all", id_type = "gene", CLSZ = 2, cutoff = 0.05, gocats = c("MF", "BP", "CC"), recordSpecGO = NULL)
+
+#save(BatchResult, file = "/path/to/folder/BatchResult.RData")
+
+load(file="/path/to/file/DE/BatchResult.RData")
+
+str(BatchResult)
+```
+
+## Analiza GO - wykres wyników
+```{r fig.height=10, fig.width=10}
+# gdy chcemy konkretne porównanie
+gos <- BatchResult[grep("basal.virgin-basal.pregnant_up",BatchResult$CLID),]
+gos2 = gos[gos$Padj<0.0001,]
+goBarplot(gos, gocat="CC")
+goBarplot(gos, gocat="MF")
+goBarplot(gos2, gocat="BP")
+```
+
+```{r fig.height=8, fig.width=12}
+# gdy chcemy wszystkie porównania
+gos <- BatchResult
+goBarplot(gos, gocat = "MF")
+```
+
+```{r fig.height=8, fig.width=12}
+# ograniczenie GO
+gos <- gos[order(gos$SampleMatch)[1:100], ]
+goBarplot(gos, gocat = "MF")
+```
+
+# Anotacja DEG do KEGG
+```{r}
+k <- kegga(tr, species = "Mm")
+topKEGG(k, sort = "up")
+```
+
+#Koniec
+```{r}
+# sprawdzenie wersji pakietów
+sessionInfo()
+```
