@@ -90,15 +90,15 @@ align(index = "index_subread/chr19_mm10", readfile1 = fastq_files, nthreads = 12
 ## Uniquely mapped reads
 
 ```{r}
-align(index = "/path/to/index/chr19_mm10", readfile1 = "/path/to/fastq/file.fastq.gz", unique = T, nthreads = 8,
-      output_file = paste("name","unique","BAM",sep=".")) # "nthreads" - its worth to change it
+align(index = "index_subread/chr19_mm10", readfile1 = fastq_files, unique = T, nthreads = 12,
+      output_file = paste(fastq_files,"unique","BAM",sep=".")) # "nthreads" - its worth to change it
 
 ```
 
 ## Mapping quality check
 
 ```{r}
-bam_files <- list.files(path = "/path/to/folder/BAM/", pattern = ".BAM$", full.names = T)
+bam_files <- list.files(path = "fastq/", pattern = ".unique.BAM$", full.names = T) # "$ at the end of the pattern" - to avoid files with the same name but with further differences, e.g. .unique.BAM.summary
 props <- propmapped(files=bam_files)
 props
 ```
@@ -106,11 +106,12 @@ props
 # Read counting
 
 ```{r}
-fc <- featureCounts(bam_files, annot.ext = "Mus_musculus.GRCm39.104.gtf", isGTFAnnotationFile = TRUE, 
+fc <- featureCounts(bam_files, annot.ext = "ref/Mus_musculus.GRCm39.104.gtf.gz", isGTFAnnotationFile = TRUE, 
                     GTF.featureType = "exon", GTF.attrType = "gene_id")
 
 # check structure of the 'fc'
 names(fc)
+View(fc$annotation)
 ```
 
 ```{r}
@@ -123,7 +124,7 @@ fc$annotation
 head(fc$counts) # row names - Entrez gene identifiers
 
 counts = as.data.frame(fc$counts) # creates data frame with counts
-write.table(counts, file = "/path/to/save/counts.txt", sep = "\t", dec = ".") # save data frame with counts
+write.table(counts, file = "mus_counts.txt", sep = "\t", dec = ".") # save data frame with counts
 ```
 
 ```{r}
@@ -132,6 +133,8 @@ fc2 <- featureCounts(bam_files, annot.inbuilt = "mm10",
 
 # check structure of the 'fc2'
 names(fc2)
+fc_diff <- setdiff(fc$annotation, fc2$annotation)
+# x = fc2$annotation[grepl('3680155\\b', fc2$annotation$Start),] # just a test
 ```
 
 # Finish
