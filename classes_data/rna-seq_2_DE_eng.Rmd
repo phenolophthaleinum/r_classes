@@ -1,0 +1,317 @@
+
+# Packages installation
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+#BiocManager::install("AnnotationDbi")
+#BiocManager::install("org.Hs.eg.db")
+BiocManager::install("org.Mm.eg.db")
+install.packages('viridis')
+BiocManager::install('mixOmics')
+install.packages('RColorBrewer')
+#BiocManager::install("GO.db")
+#BiocManager::install("systemPipeR")
+#BiocManager::install("clusterProfiler")
+BiocManager::install("Glimma")
+BiocManager::install("edgeR")
+BiocManager::install("biomaRt")
+```
+
+# Packages loading
+```{r}
+#library("AnnotationDbi")
+#library("biomaRt")
+#library("org.Hs.eg.db")
+library('org.Mm.eg.db')
+library(edgeR)
+library(limma)
+library(Glimma)
+library(gplots)
+library(RColorBrewer)
+```
+
+# Differential gene expression (edgeR)
+```{r}
+# Wczytanie danych do R
+seqdata <- read.table("DE/GSE60450_Lactation-GenewiseCounts.txt", stringsAsFactors = FALSE, header = T)
+
+dim(seqdata)
+
+sampleinfo <- read.delim("DE/SampleInfo.txt", header = T, stringsAsFactors = T) # Add `stringsAsFactors = TRUE`, otherwise the columns will be treated as characters and will not be recognized as vectors
+
+sampleinfo
+```
+
+## DGEList object creation
+```{r}
+y <- DGEList(counts = seqdata[, 3:14], genes = seqdata[,1], group = sampleinfo$CellType)
+```
+
+```{r}
+names(y)
+y$samples
+```
+
+## Annotation
+```{r}
+library(org.Mm.eg.db)
+egSYMBOL <- toTable(org.Mm.egSYMBOL)
+head(egSYMBOL)
+m <- match(y$genes$genes, egSYMBOL$gene_id)
+y$genes$Symbol <- egSYMBOL$symbol[m]
+head(y$genes)
+colnames(y) <- substr(colnames(y),start=1,stop=7)
+head(y)
+```
+
+## Sample names
+```{r}
+table(colnames(y)==sampleinfo$SampleName)
+```
+
+## Data filtration
+```{r}
+d <- is.na(y$genes$Symbol)
+y <- y[!d,]
+nrow(y)
+nrow(d)
+```
+
+```{r}
+keep <- filterByExpr(y, min.count = 5, min.prop = 0.5)
+table(keep)
+```
+
+```{r}
+y <- y[keep,  keep.lib.sizes=FALSE]
+```
+
+### recalculating the size of libraries
+```{r}
+y$samples$lib.size <- colSums(y$counts)
+y$samples
+```
+
+## TMM normalization 
+```{r}
+y1 <- calcNormFactors(y)
+y1$samples
+```
+
+## Library sizes - plots
+```{r}
+y1$samples$lib.size
+barplot(y1$samples$lib.size,names=colnames(y1),las=2)
+# Add a title to the plot
+title("Barplot of library sizes")
+```
+
+## Distribution plots
+```{r fig.height=4, fig.width=8}
+par(mfrow=c(1,2))
+
+logcounts <- cpm(y,log=TRUE)
+boxplot(logcounts, xlab="", ylab="Log2 counts per million",las=2)
+abline(h=median(logcounts),col="blue") # Adding a median line with logCPM
+title("Boxplots of logCPMs (unnormalised)")
+
+logcounts <- cpm(y1,log=TRUE)
+boxplot(logcounts, xlab="", ylab="Log2 counts per million",las=2)
+abline(h=median(logcounts),col="blue") # Adding a median line with logCPM
+title("Boxplots of logCPMs (normalised)")
+```
+
+## MD plots (MAplot)
+```{r fig.height=4, fig.width=8}
+par(mfrow=c(1,2))
+
+plotMD(cpm(y, log=TRUE), column=7)
+abline(h=0, col="red", lty=2, lwd=2)
+
+plotMD(cpm(y, log=TRUE), column=11)
+abline(h=0, col="red", lty=2, lwd=2)
+```
+
+```{r fig.height=4, fig.width=8}
+par(mfrow=c(1,2))
+
+plotMD(y1,column = 7)
+abline(h=0,col="grey")
+
+plotMD(y1,column = 11)
+abline(h=0,col="grey")
+```
+
+## Multidimensional scaling plots (MDSplots)
+```{r}
+par(mfrow=c(1,2))
+# choosing a color scheme for the variable CellType
+levels(sampleinfo$CellType)
+
+col.cell <- c("purple","orange")[sampleinfo$CellType]
+data.frame(sampleinfo$CellType,col.cell)
+# creating an MDS plot for CellType
+plotMDS(y1,col=col.cell)
+# Adding the legend
+legend("topleft",fill=c("purple","orange"),legend=levels(sampleinfo$CellType))
+# Adding the title
+title("Cell type")
+
+# the same for "Status" variable
+levels(sampleinfo$Status)
+col.status <- c("blue","red","green")[sampleinfo$Status]
+col.status
+plotMDS(y1,col=col.status, pch = 5)
+legend("topleft",fill=c("blue","red","green"),legend=levels(sampleinfo$Status),cex=0.8)
+title("Status")
+```
+
+## Preparing the experimental design matrix
+```{r}
+#group <- paste(sampleinfo$CellType, sampleinfo$Status, sep=".")
+#group <- factor(group)
+#group
+########## for other comparisons ########## 
+group = sampleinfo$CellType
+group <- factor(group)
+group
+```
+
+```{r}
+design <- model.matrix(~ 0 + group)
+colnames(design) <- levels(group)
+design
+```
+
+## Estimation of dispersion
+```{r}
+y1 <- estimateDisp(y1, design, robust=TRUE)
+y1$common.dispersion
+plotBCV(y1)
+```
+
+## Fitting a linear model
+```{r}
+fit <- glmQLFit(y1, design, robust=TRUE)
+head(fit$coefficients)
+```
+
+## Selection of comparisons for testing
+```{r}
+cont.matrix <- makeContrasts(B.PregVsLac = basal.pregnant - basal.lactate, levels = design)
+cont.matrix <- makeContrasts(BVsL = basal - luminal, levels = design)
+
+#cont.matrix <- makeContrasts(B.PregVsLac = basal.pregnant - basal.lactate, L.PregVsLac = luminal.pregnant - luminal.lactate, levels = design)
+
+cont.matrix
+```
+
+## Testing procedure
+```{r}
+qlf <- glmQLFTest(fit, contrast = cont.matrix)
+topTags(qlf)
+summary(decideTests(qlf))
+```
+
+## Testing procedure including FC (fold change)
+```{r}
+tr <- glmTreat(fit, contrast=cont.matrix, lfc=log2(1.5))
+topTags(tr)
+summary(decideTests(tr))
+```
+
+## Plots After Differential Analysis
+
+### MAplot
+```{r fig.height=4, fig.width=8}
+par(mfrow=c(1,2))
+
+plotMD(qlf)
+abline(h=c(-1,1), col="blue")
+
+plotMD(tr)
+abline(h=c(-1,1), col="blue")
+```
+
+### Data for the volcano plot
+```{r}
+FDR <- p.adjust(qlf$table$PValue, method="BH")
+
+volcanoData <- data.frame(
+  logFC = qlf$table$logFC.B.PregVsLac,
+  negLogPval = -log10(FDR)
+  )
+
+volcanoData2 <- data.frame(
+  logFC = qlf$table$logFC.L.PregVsLac,
+  negLogPval = -log10(FDR)
+  )
+
+head(volcanoData)
+head(volcanoData2)
+```
+
+### volcano plot
+```{r}
+library(ggplot2)
+
+ggplot(volcanoData, aes(logFC, negLogPval)) +
+geom_point()
+
+ggplot(volcanoData2, aes(logFC, negLogPval)) +
+geom_point()
+```
+
+```{r}
+library(dplyr)
+#volcanoData <- volcanoData %>%
+#  mutate(top50 = ifelse(row_number(desc(negLogPval)) < 51, T, F))
+
+volcanoData <- volcanoData %>%
+  mutate(sig = ifelse(volcanoData$negLogPval > 1.30103, T, F))
+
+ggplot(volcanoData, aes(logFC, negLogPval, color = sig)) +
+  geom_point() + theme(legend.position = "none") +
+  scale_color_manual(values = c("black", "blue"))
+```
+
+### Heatmap  (FDR < 0.05)
+```{r}
+library(viridis)
+library(mixOmics)
+library(RColorBrewer)
+```
+
+```{r}
+cpm_y <- cpm(tr, log=TRUE, prior.count = 1)
+head(cpm_y)
+```
+
+```{r include=FALSE}
+table = topTags(tr, n=Inf)
+table = as.data.frame(table)
+selY <- cpm_y[rownames(table)[table$FDR<0.01 & abs(table$logFC)>2.5],]
+```
+
+```{r fig.height=10, fig.width=10}
+cimColor <- turbo(255, begin = 0.1, end = 0.9, direction = 1)
+cim(t(selY), color = cimColor, symkey=F, transpose = T)
+```
+
+# Saving the results
+```{r}
+# generating results for all genes
+edgeR.res <- topTags(tr, sort.by = "p", n = "Inf")
+
+# saving the results to a file
+write.csv(edgeR.res,
+	file = "B.PregVsLacResults.csv",
+	row.names=FALSE)
+```
+
+# End
+```{r}
+# packages info
+sessionInfo()
+```

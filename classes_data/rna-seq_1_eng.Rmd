@@ -98,7 +98,7 @@ align(index = "index_subread/chr19_mm10", readfile1 = fastq_files, unique = T, n
 ## Mapping quality check
 
 ```{r}
-bam_files <- list.files(path = "fastq/", pattern = ".unique.BAM$", full.names = T) # "$ at the end of the pattern" - to avoid files with the same name but with further differences, e.g. .unique.BAM.summary
+bam_files <- list.files(path = "fastq/", pattern = ".subread.BAM$", full.names = T) # "$ at the end of the pattern" - to avoid files with the same name but with further differences, e.g. .unique.BAM.summary
 props <- propmapped(files=bam_files)
 props
 ```
@@ -124,7 +124,7 @@ fc$annotation
 head(fc$counts) # row names - Entrez gene identifiers
 
 counts = as.data.frame(fc$counts) # creates data frame with counts
-write.table(counts, file = "mus_counts.txt", sep = "\t", dec = ".") # save data frame with counts
+write.table(counts, file = "mus_counts_vanilla.txt", sep = "\t", dec = ".") # save data frame with counts
 ```
 
 ```{r}
